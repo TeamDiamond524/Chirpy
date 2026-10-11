@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -9,16 +10,21 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"uuid"
 
+	"github.com/TeamDiamond524/Chirpy/internal/database"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
     fileserverHits atomic.Int32
+    dbQueires *database.Queries
+    platform string
 }
 
 func main() {
+    fmt.Printf("Starting server\n")
     godotenv.Load()
     dbURL := os.Getenv("DB_URL")
 
@@ -28,15 +34,19 @@ func main() {
         return
     }
 
-    dbQueries := database.New(db)
-
     var apiCfg apiConfig
     mux := http.NewServeMux()
 
+    fmt.Printf("Setting up database connection\n")
+    apiCfg.dbQueires = database.New(db)
+    apiCfg.platform = os.Getenv("PLATFORM")
+
+    fmt.Printf("Setting up handlers\n")
     mux.HandleFunc("GET /api/healthz", ReadinessHandler)
     mux.HandleFunc("GET /admin/metrics", apiCfg.MetricsHandler)
     mux.HandleFunc("POST /admin/reset",   apiCfg.ResetHandler)
-    mux.HandleFunc("POST /api/validate_chirp", ChirpValidationHandler)
+    mux.HandleFunc("POST /api/chirps", ChirpsHandler)
+    mux.HandleFunc("POST /api/users", apiCfg.CreateUserHandler)
 
     mux.Handle("/app/", http.StripPrefix("/app", apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))))
 
@@ -45,7 +55,11 @@ func main() {
         Addr: ":8080",
     }
 
-    server.ListenAndServe()
+    fmt.Printf("Server is set up\n")
+    if err := server.ListenAndServe(); err != nil {
+        fmt.Printf("Error while running server: %s", err)
+    }
+    fmt.Printf("Closing server\n")
 }
 
 func ReadinessHandler(res http.ResponseWriter, req *http.Request) {
@@ -68,23 +82,30 @@ func (a *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 func (a *apiConfig) MetricsHandler(w http.ResponseWriter, r *http.Request) {
     w.Header().Set("Content-Type", "text/html; charset=utf-8")
     w.WriteHeader(200)
-    w.Write([]byte(fmt.Sprintf(`<html>
+    w.Write(fmt.Appendf([]byte{}, `<html>
   <body>
     <h1>Welcome, Chirpy Admin</h1>
     <p>Chirpy has been visited %d times!</p>
   </body>
-</html>`, a.fileserverHits.Load())))
+</html>`, a.fileserverHits.Load()))
 }
 
 func (a *apiConfig) ResetHandler(w http.ResponseWriter, r *http.Request) {
+    if a.platform != "dev" {
+        w.WriteHeader(403)
+        return
+    }
+
     a.fileserverHits.Store(0)
+    a.dbQueires.ResetUsers(context.Background())
     w.Header().Set("Content-Type", "text/plain; charset=utf-8")
     w.WriteHeader(200)
 }
 
-func ChirpValidationHandler(w http.ResponseWriter, r *http.Request) {
+func ChirpsHandler(w http.ResponseWriter, r *http.Request) {
     type reqParameters struct {
         Body string `json:"body"`
+        UserID uuid.UUID `json:"user_id"`
     }
 
     decoder := json.NewDecoder(r.Body)
@@ -154,4 +175,37 @@ func CleanBody(body string) string {
     }
     
     return strings.Join(words, " ")
+}
+
+func (a *apiConfig) CreateUserHandler(w http.ResponseWriter, r *http.Request) {
+    type userParam struct {
+        Email string `json:"email"`
+    }
+
+    var email userParam
+    decoder := json.NewDecoder(r.Body)
+
+    if err := decoder.Decode(&email); err != nil {
+        fmt.Printf("Error while decoding json: %s\n", err)
+        w.WriteHeader(400)
+        return
+    }
+
+    user, err := a.dbQueires.CreateUser(context.Background(), email.Email)
+    if err != nil {
+        fmt.Printf("Errorn while creating user: %s\n", err)
+        w.WriteHeader(400)
+        return
+    }
+
+    userData, err := json.Marshal(user)
+    if err != nil {
+        fmt.Printf("Error while marshaling data: %s\n", err)
+        w.WriteHeader(400)
+        return
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(201)
+    w.Write(userData)
 }
