@@ -1,12 +1,17 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
+
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
@@ -14,6 +19,17 @@ type apiConfig struct {
 }
 
 func main() {
+    godotenv.Load()
+    dbURL := os.Getenv("DB_URL")
+
+    db, err := sql.Open("postgres", dbURL)
+    if err != nil {
+        fmt.Printf("Failed to connect with database, %s", err)
+        return
+    }
+
+    dbQueries := database.New(db)
+
     var apiCfg apiConfig
     mux := http.NewServeMux()
 
