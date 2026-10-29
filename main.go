@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
-	"uuid"
 
 	"github.com/TeamDiamond524/Chirpy/internal/database"
 	"github.com/joho/godotenv"
@@ -45,7 +44,7 @@ func main() {
     mux.HandleFunc("GET /api/healthz", ReadinessHandler)
     mux.HandleFunc("GET /admin/metrics", apiCfg.MetricsHandler)
     mux.HandleFunc("POST /admin/reset",   apiCfg.ResetHandler)
-    mux.HandleFunc("POST /api/chirps", ChirpsHandler)
+    mux.HandleFunc("POST /api/chirps", apiCfg.ChirpsHandler)
     mux.HandleFunc("POST /api/users", apiCfg.CreateUserHandler)
 
     mux.Handle("/app/", http.StripPrefix("/app", apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))))
@@ -102,15 +101,10 @@ func (a *apiConfig) ResetHandler(w http.ResponseWriter, r *http.Request) {
     w.WriteHeader(200)
 }
 
-func ChirpsHandler(w http.ResponseWriter, r *http.Request) {
-    type reqParameters struct {
-        Body string `json:"body"`
-        UserID uuid.UUID `json:"user_id"`
-    }
-
+func (a *apiConfig) ChirpsHandler(w http.ResponseWriter, r *http.Request) {
     decoder := json.NewDecoder(r.Body)
 
-    clientInput := reqParameters{}
+    clientInput := database.CreateChirpParams{}
     if err := decoder.Decode(&clientInput); err != nil {
         fmt.Printf("Error decoding parameters: %v\n", err)
         RespondWithError(w, 400, "Something went wrong")
@@ -122,12 +116,14 @@ func ChirpsHandler(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    type resParameters struct {
-        Valid bool `json:"valid"`
-        CleanedBody string `json:"cleaned_body"`
+    chirp, err := a.dbQueires.CreateChirp(context.Background(), clientInput)
+    if err != nil {
+        fmt.Printf("Error while creating new chirp: %s\n", err)
+        RespondWithError(w, 400, "Something went wrong")
+        return
     }
 
-    RespondWithJSON(w, 200, resParameters{Valid: true, CleanedBody: CleanBody(clientInput.Body)})
+    RespondWithJSON(w, 201, chirp)
 }
 
 func RespondWithError(w http.ResponseWriter, code int, errMsg string) {
